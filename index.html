@@ -1,1 +1,146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3空間感性・観光地推薦 検証ツール</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- sql.js (ブラウザ内SQLite) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+</head>
+<body>
+  <header>
+    <h1>3空間感性・観光地推薦 検証プロトタイプ</h1>
+    <p class="subtitle">移動空間 ($x_{MS}$) ・ 滞在空間 ($x_{SS}$) ・ 活動空間 ($x_{AS}$) による重み付け再計算ツール（SQLite / sql.js 実行）</p>
+    <div id="db-status" class="status loading">データベース読み込み中...</div>
+  </header>
 
+  <main>
+    <!-- ① 入力セクション -->
+    <section class="card">
+      <h2>① 入力条件（現在地・検索半径・印象語）</h2>
+
+      <div class="grid-2">
+        <div class="input-group">
+          <label for="preset-select">現在地プリセット</label>
+          <select id="preset-select">
+            <option value="34.6946,135.1950">三ノ宮駅 (34.6946, 135.1950)</option>
+            <option value="34.706389,135.195933">新神戸駅 (34.7064, 135.1959)</option>
+            <option value="34.682631,135.186709">神戸ポートタワー付近 (34.6826, 135.1867)</option>
+            <option value="34.636765,135.097720">須磨浦公園 (34.6368, 135.0977)</option>
+            <option value="34.628517,135.039018">アジュール舞子 (34.6285, 135.0390)</option>
+          </select>
+          <button type="button" id="btn-gps" class="btn-sub">GPSで現在地を取得</button>
+        </div>
+
+        <div class="input-group coords-row">
+          <div>
+            <label for="input-lat">緯度 (lat)</label>
+            <input type="number" id="input-lat" step="0.000001" value="34.6946" />
+          </div>
+          <div>
+            <label for="input-lng">経度 (lng)</label>
+            <input type="number" id="input-lng" step="0.000001" value="135.1950" />
+          </div>
+          <div>
+            <label for="input-radius">検索半径 (km)</label>
+            <input type="number" id="input-radius" step="0.5" min="0.1" max="100" value="2.0" />
+          </div>
+        </div>
+      </div>
+
+      <div class="model-toggle">
+        <span class="label-inline">総合空間（比較基準）の計算方式：</span>
+        <label>
+          <input type="radio" name="total-mode" value="54" checked />
+          54語連結モデル（重複許容・加工なし）
+        </label>
+        <label>
+          <input type="radio" name="total-mode" value="40" />
+          40語統合モデル（共通語を平均値で統合）
+        </label>
+      </div>
+
+      <div class="word-header">
+        <h3>印象語を選択（全40語・漠然入力）</h3>
+        <div class="word-actions">
+          <button type="button" id="btn-preset-words" class="btn-sub">実験用デフォルト6語を選択</button>
+          <button type="button" id="btn-clear-words" class="btn-sub">全解除</button>
+        </div>
+      </div>
+      <p class="hint">
+        ※ 空間を意識せず印象語を選択すると、該当する空間の入力ベクトルに自動で <code>1</code> が設定されます（バッジ：<span class="badge b-mv">移</span>移動 <span class="badge b-st">滞</span>滞在 <span class="badge b-sp">活</span>活動）。
+      </p>
+      <div id="word-grid" class="word-grid"></div>
+      <div id="selected-summary" class="selected-summary"></div>
+
+      <div class="run-bar">
+        <button type="button" id="btn-run" class="btn-primary" disabled>SQLを実行してランキングを計算</button>
+      </div>
+    </section>
+
+    <!-- 実行結果エリア -->
+    <div id="results-area" class="hidden">
+      <!-- ② 絞り込み結果サマリー -->
+      <section class="card summary-bar">
+        <div id="filter-summary"></div>
+      </section>
+
+      <!-- ④ 個別評価関数出力 (Top-5) -->
+      <section class="card">
+        <div class="section-head">
+          <h2>④ 評価関数 GE による推薦結果（上位5位）</h2>
+          <div class="mode-selector">
+            <label for="ge-mode">評価タイプを選択：</label>
+            <select id="ge-mode">
+              <option value="grand">(i) 大局観 (0.5, 0.5, 0.5)</option>
+              <option value="move">(ii) 移動型 (1.0, 0.1, 0.1)</option>
+              <option value="stay">(iii) 滞在型 (0.1, 1.0, 0.1)</option>
+              <option value="space">(iv) 活動型 (0.1, 0.1, 1.0)</option>
+              <option value="move_stay">(v) 移動・滞在型 (0.5, 0.5, 0.1)</option>
+              <option value="move_space">(vi) 移動・活動型 (0.5, 0.1, 0.5)</option>
+              <option value="stay_space">(vii) 滞在・活動型 (0.1, 0.5, 0.5)</option>
+            </select>
+          </div>
+        </div>
+        <p id="ge-formula-desc" class="hint"></p>
+        <div class="table-wrap">
+          <table id="table-single-top5"></table>
+        </div>
+      </section>
+
+      <!-- ④ 全7タイプ＋総合空間 一括比較欄 (Top-5) -->
+      <section class="card">
+        <div class="section-head">
+          <h2>④-2 全7タイプ ＋ 総合空間（比較基準）一括比較（上位5位）</h2>
+          <button type="button" id="btn-copy-all7" class="btn-sub">CSVコピー</button>
+        </div>
+        <div class="table-wrap">
+          <table id="table-all7"></table>
+        </div>
+      </section>
+
+      <!-- ③ 空間別相関量ランキング -->
+      <section class="card">
+        <div class="section-head">
+          <h2>③ 空間別相関量ランキング（絞り込み全件）</h2>
+          <button type="button" id="btn-copy-spaces" class="btn-sub">CSVコピー</button>
+        </div>
+        <div class="table-wrap">
+          <table id="table-spaces"></table>
+        </div>
+      </section>
+
+      <!-- デバッグ・卒論確認用SQL表示 -->
+      <section class="card">
+        <details>
+          <summary>実行したSQLクエリを確認する（SQLite / sql.js）</summary>
+          <pre id="sql-preview"></pre>
+        </details>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
