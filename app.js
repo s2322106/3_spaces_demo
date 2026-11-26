@@ -1,554 +1,514 @@
-// =========================================================================
-// 設定エリア（将来データセットや語彙を入れ替える場合はここを変更）
-// =========================================================================
-const DATA_SQL_PATH = "./data_kobe.sql";
+// ====================================================================
+// 3空間感性・観光地推薦 検証プロトタイプ (神戸・京都 切り替え対応版)
+// ====================================================================
 
-// 各空間の印象語定義（移動 → 滞在 → 活動 の順で統一）
-const MOVE_WORDS = [
+const DATASETS = {
+  kobe: {
+    label: "神戸",
+    sqlPath: "./data_kobe.sql",
+    defaultRadius: 2.0,
+    presets: [
+      { label: "三ノ宮駅 (34.6946, 135.1950)", lat: 34.6946, lng: 135.1950 },
+      { label: "新神戸駅 (34.7064, 135.1959)", lat: 34.7064, lng: 135.1959 },
+      { label: "元町駅 (34.6895, 135.1871)", lat: 34.6895, lng: 135.1871 },
+      { label: "神戸ポートタワー (34.6826, 135.1867)", lat: 34.6826, lng: 135.1867 },
+      { label: "須磨海浜公園 (34.6423, 135.1198)", lat: 34.6423, lng: 135.1198 },
+      { label: "舞子駅周辺 (34.6334, 135.0341)", lat: 34.6334, lng: 135.0341 }
+    ]
+  },
+  kyoto: {
+    label: "京都",
+    sqlPath: "./data_kyoto.sql",
+    defaultRadius: 2.0,
+    presets: [
+      { label: "京都駅 (34.9858, 135.7588)", lat: 34.9858, lng: 135.7588 },
+      { label: "四条河原町 (35.0038, 135.7693)", lat: 35.0038, lng: 135.7693 },
+      { label: "清水寺周辺 (34.9949, 135.7850)", lat: 34.9949, lng: 135.7850 },
+      { label: "嵐山・渡月橋 (35.0134, 135.6778)", lat: 35.0134, lng: 135.6778 },
+      { label: "金閣寺周辺 (35.0394, 135.7292)", lat: 35.0394, lng: 135.7292 },
+      { label: "伏見稲荷大社 (34.9671, 135.7727)", lat: 34.9671, lng: 135.7727 },
+      { label: "宇治・平等院 (34.8893, 135.8077)", lat: 34.8893, lng: 135.8077 },
+      { label: "天橋立 (35.5698, 135.1918)", lat: 35.5698, lng: 135.1918 }
+    ]
+  }
+};
+
+const MS_WORDS = [
   "スムーズな", "賑やかな", "単調な", "道に迷わない", "開放的な",
   "交通手段が便利", "勾配がある", "殺風景な", "歩行空間にゆとりがある", "道幅が広い",
   "歴史的な", "緑豊かな", "安心感がある", "非日常的な", "落ち着いた",
   "きれい", "快適", "見晴らしの良い", "静寂な"
 ];
 
-const STAY_WORDS = [
+const SS_WORDS = [
   "快適", "荘厳な", "落ち着いた", "非日常的な", "洋風な",
   "和風な", "きれい", "モダンな", "開放的な", "こぢんまりした",
   "平坦な", "静寂な", "緑豊かな", "明るい", "見晴らしの良い",
   "雨が避けられる", "賑やかな"
 ];
 
-const SPACE_WORDS = [
+const AS_WORDS = [
   "楽しい", "賑やかな", "はしゃぐ", "ワイワイ", "ワクワク",
   "ゆっくり", "落ち着いた", "癒す", "まったり", "ゆったりとした",
   "晴れる気がする", "田舎", "きれい", "おいしい", "文化的な",
   "歴史的な", "面白い", "非日常的な"
 ];
 
-// 評価関数 GE の7タイプ定義（移動 w_MS, 滞在 w_SS, 活動 w_AS）
-const GE_TYPES = [
-  { key: "grand",      label: "(i) 大局観",        w: [0.5, 0.5, 0.5], col: "grand_score" },
-  { key: "move",       label: "(ii) 移動型",       w: [1.0, 0.1, 0.1], col: "move_score" },
-  { key: "stay",       label: "(iii) 滞在型",      w: [0.1, 1.0, 0.1], col: "stay_score" },
-  { key: "space",      label: "(iv) 活動型",       w: [0.1, 0.1, 1.0], col: "space_score" },
-  { key: "move_stay",  label: "(v) 移動・滞在型",  w: [0.5, 0.5, 0.1], col: "mv_st_score" },
-  { key: "move_space", label: "(vi) 移動・活動型", w: [0.5, 0.1, 0.5], col: "mv_sp_score" },
-  { key: "stay_space", label: "(vii) 滞在・活動型",w: [0.1, 0.5, 0.5], col: "st_sp_score" }
+const DEFAULT_SELECTED = ["スムーズな", "快適", "落ち着いた", "静寂な", "ゆっくり", "非日常的な"];
+
+const EVAL_TYPES = [
+  { key: "taikyoku", label: "(i) 大局観 (0.5, 0.5, 0.5)", wMS: 0.5, wSS: 0.5, wAS: 0.5 },
+  { key: "move",     label: "(ii) 移動型 (1.0, 0.1, 0.1)", wMS: 1.0, wSS: 0.1, wAS: 0.1 },
+  { key: "stay",     label: "(iii) 滞在型 (0.1, 1.0, 0.1)", wMS: 0.1, wSS: 1.0, wAS: 0.1 },
+  { key: "act",      label: "(iv) 活動型 (0.1, 0.1, 1.0)", wMS: 0.1, wSS: 0.1, wAS: 1.0 },
+  { key: "ms_ss",    label: "(v) 移動・滞在型 (0.5, 0.5, 0.1)", wMS: 0.5, wSS: 0.5, wAS: 0.1 },
+  { key: "ms_as",    label: "(vi) 移動・活動型 (0.5, 0.1, 0.5)", wMS: 0.5, wSS: 0.1, wAS: 0.5 },
+  { key: "ss_as",    label: "(vii) 滞在・活動型 (0.1, 0.5, 0.5)", wMS: 0.1, wSS: 0.5, wAS: 0.5 }
 ];
 
-// 実験用デフォルト6語（DB Fiddle検証と同じ語彙）
-const DEFAULT_WORDS = ["スムーズな", "快適", "落ち着いた", "静寂な", "ゆっくり", "非日常的な"];
-
-// 全40ユニーク語リストを自動構築
-const UNIQUE_WORDS = Array.from(new Set([...MOVE_WORDS, ...STAY_WORDS, ...SPACE_WORDS]));
-
-let db = null;
-let lastRows = []; // 最新のSQL計算結果（全件）
-
-// =========================================================================
-// 初期化処理（sql.js ロード ＋ data_kobe.sql 読み込み）
-// =========================================================================
-async function init() {
-  buildWordUI();
-  bindEvents();
-
-  const statusEl = document.getElementById("db-status");
-  try {
-    const SQL = await initSqlJs({
-      locateFile: (file) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
-    });
-    db = new SQL.Database();
-
-    // SQLite上で大円距離・正規化内積をそのまま実行できるよう数学関数を登録
-    db.create_function("RADIANS", (deg) => (deg * Math.PI) / 180.0);
-    db.create_function("SIN", (x) => Math.sin(x));
-    db.create_function("COS", (x) => Math.cos(x));
-    db.create_function("ACOS", (x) => Math.acos(x));
-    db.create_function("SQRT", (x) => Math.sqrt(x));
-    db.create_function("POW", (x, y) => Math.pow(x, y));
-
-    const res = await fetch(DATA_SQL_PATH);
-    if (!res.ok) throw new Error(`${DATA_SQL_PATH} の読み込みに失敗しました (HTTP ${res.status})`);
-    const sqlText = await res.text();
-    db.run(sqlText);
-
-    // 入力・現在地テーブルを確実に再作成（data_kobe.sqlに含まれていても上書き）
-    setupInputTables();
-
-    const cntRes = db.exec("SELECT COUNT(*) FROM spots;");
-    const totalSpots = cntRes[0].values[0][0];
-
-    statusEl.textContent = `DB準備完了（登録スポット：${totalSpots}地点 / ${DATA_SQL_PATH}）`;
-    statusEl.className = "status ready";
-    document.getElementById("btn-run").disabled = false;
-
-    // 初期選択状態で1回自動実行
-    selectPresetWords(DEFAULT_WORDS);
-    runCalculation();
-  } catch (err) {
-    console.error(err);
-    statusEl.textContent = `エラー: ${err.message}（※ローカル実行時は簡易HTTPサーバ経由で開いてください）`;
-    statusEl.className = "status error";
+// 全40語（重複除去・出現順）
+const ALL_WORDS = [];
+const WORD_SPACES = {};
+for (const w of [...MS_WORDS, ...SS_WORDS, ...AS_WORDS]) {
+  if (!WORD_SPACES[w]) {
+    ALL_WORDS.push(w);
+    WORD_SPACES[w] = {
+      ms: MS_WORDS.includes(w),
+      ss: SS_WORDS.includes(w),
+      as: AS_WORDS.includes(w)
+    };
   }
 }
 
-function setupInputTables() {
-  const makeCols = (words) => words.map((w) => `\`${w}\` DOUBLE`).join(", ");
-  db.run(`
-    DROP TABLE IF EXISTS input_move;
-    DROP TABLE IF EXISTS input_stay;
-    DROP TABLE IF EXISTS input_space;
-    DROP TABLE IF EXISTS current_location;
-    CREATE TABLE input_move (${makeCols(MOVE_WORDS)});
-    CREATE TABLE input_stay (${makeCols(STAY_WORDS)});
-    CREATE TABLE input_space (${makeCols(SPACE_WORDS)});
-    CREATE TABLE current_location (
-      現在地名 VARCHAR(50) PRIMARY KEY,
-      緯度 DOUBLE,
-      経度 DOUBLE,
-      検索半径_km DOUBLE
-    );
-  `);
+let SQL = null;
+let db = null;
+let currentDatasetKey = "kobe";
+const sqlTextCache = {};
+let lastRows = [];
+
+// --------------------------------------------------------------------
+// 初期化
+// --------------------------------------------------------------------
+async function initApp() {
+  buildEvalSelect();
+  buildWordsGrid();
+  bindEvents();
+
+  setStatus("SQLiteエンジン起動中...", "loading");
+  try {
+    SQL = await initSqlJs({
+      locateFile: (file) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
+    });
+    await loadDataset("kobe");
+  } catch (err) {
+    console.error(err);
+    setStatus(`初期化エラー: ${err.message}`, "error");
+  }
 }
 
-// =========================================================================
-// UI生成・イベント設定
-// =========================================================================
-function buildWordUI() {
-  const grid = document.getElementById("word-grid");
+function setStatus(text, type) {
+  const el = document.getElementById("db-status");
+  el.textContent = text;
+  el.className = `status-badge ${type}`;
+}
+
+async function loadDataset(datasetKey) {
+  const cfg = DATASETS[datasetKey];
+  if (!cfg || !SQL) return;
+  currentDatasetKey = datasetKey;
+
+  setStatus(`${cfg.label}データ読み込み中... (${cfg.sqlPath})`, "loading");
+  try {
+    if (!sqlTextCache[datasetKey]) {
+      const res = await fetch(cfg.sqlPath);
+      if (!res.ok) throw new Error(`${cfg.sqlPath} の読み込みに失敗しました (HTTP ${res.status})`);
+      sqlTextCache[datasetKey] = await res.text();
+    }
+
+    if (db) db.close();
+    db = new SQL.Database();
+    registerMathFunctions(db);
+    db.run(sqlTextCache[datasetKey]);
+
+    const countRes = db.exec("SELECT COUNT(*) FROM spots;");
+    const spotCount = countRes[0].values[0][0];
+
+    populatePresets(cfg);
+    document.getElementById("radius-input").value = cfg.defaultRadius.toFixed(1);
+
+    setStatus(`DB準備完了（登録スポット：${spotCount.toLocaleString()}地点 / ${cfg.sqlPath}）`, "ready");
+    runCalculation();
+  } catch (err) {
+    console.error(err);
+    setStatus(`読み込みエラー: ${err.message}`, "error");
+  }
+}
+
+function registerMathFunctions(database) {
+  database.create_function("RADIANS", (deg) => (deg * Math.PI) / 180);
+  database.create_function("SIN", (x) => Math.sin(x));
+  database.create_function("COS", (x) => Math.cos(x));
+  database.create_function("ACOS", (x) => Math.acos(Math.max(-1, Math.min(1, x))));
+  database.create_function("SQRT", (x) => Math.sqrt(Math.max(0, x)));
+  database.create_function("POW", (x, y) => Math.pow(x, y));
+}
+
+// --------------------------------------------------------------------
+// UI構築
+// --------------------------------------------------------------------
+function populatePresets(cfg) {
+  const sel = document.getElementById("preset-select");
+  sel.innerHTML = "";
+  cfg.presets.forEach((p, idx) => {
+    const opt = document.createElement("option");
+    opt.value = String(idx);
+    opt.textContent = p.label;
+    sel.appendChild(opt);
+  });
+  if (cfg.presets.length > 0) {
+    document.getElementById("lat-input").value = cfg.presets[0].lat.toFixed(4);
+    document.getElementById("lng-input").value = cfg.presets[0].lng.toFixed(4);
+  }
+}
+
+function buildEvalSelect() {
+  const sel = document.getElementById("eval-type-select");
+  EVAL_TYPES.forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t.key;
+    opt.textContent = t.label;
+    if (t.key === "move") opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function buildWordsGrid() {
+  const grid = document.getElementById("words-grid");
   grid.innerHTML = "";
-
-  UNIQUE_WORDS.forEach((word) => {
-    const inMv = MOVE_WORDS.includes(word);
-    const inSt = STAY_WORDS.includes(word);
-    const inSp = SPACE_WORDS.includes(word);
-
+  ALL_WORDS.forEach((w) => {
+    const sp = WORD_SPACES[w];
     const label = document.createElement("label");
     label.className = "word-chip";
-    label.innerHTML = `
-      <input type="checkbox" value="${word}" />
-      <span>${word}</span>
-      <span class="badges">
-        ${inMv ? '<span class="badge b-mv">移</span>' : ""}
-        ${inSt ? '<span class="badge b-st">滞</span>' : ""}
-        ${inSp ? '<span class="badge b-sp">活</span>' : ""}
-      </span>
-    `;
-    const cb = label.querySelector("input");
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = w;
+    cb.checked = DEFAULT_SELECTED.includes(w);
+    if (cb.checked) label.classList.add("selected");
+
     cb.addEventListener("change", () => {
       label.classList.toggle("selected", cb.checked);
-      updateSelectedSummary();
+      runCalculation();
     });
+
+    const textSpan = document.createElement("span");
+    textSpan.className = "word-text";
+    textSpan.textContent = w;
+
+    const badges = document.createElement("span");
+    badges.className = "badge-group";
+    if (sp.ms) badges.innerHTML += '<span class="badge ms">移</span>';
+    if (sp.ss) badges.innerHTML += '<span class="badge ss">滞</span>';
+    if (sp.as) badges.innerHTML += '<span class="badge as">活</span>';
+
+    label.appendChild(cb);
+    label.appendChild(textSpan);
+    label.appendChild(badges);
     grid.appendChild(label);
   });
 }
 
-function getSelectedWords() {
-  return Array.from(document.querySelectorAll('#word-grid input[type="checkbox"]:checked'))
-    .map((el) => el.value);
-}
-
-function selectPresetWords(words) {
-  const set = new Set(words);
-  document.querySelectorAll('#word-grid .word-chip').forEach((label) => {
-    const cb = label.querySelector("input");
-    cb.checked = set.has(cb.value);
-    label.classList.toggle("selected", cb.checked);
-  });
-  updateSelectedSummary();
-}
-
-function updateSelectedSummary() {
-  const selected = new Set(getSelectedWords());
-  const mvCnt = MOVE_WORDS.filter((w) => selected.has(w)).length;
-  const stCnt = STAY_WORDS.filter((w) => selected.has(w)).length;
-  const spCnt = SPACE_WORDS.filter((w) => selected.has(w)).length;
-
-  document.getElementById("selected-summary").textContent =
-    `選択中：${selected.size}語（自動マッピング → 移動空間: ${mvCnt}語 / 滞在空間: ${stCnt}語 / 活動空間: ${spCnt}語）`;
-}
-
 function bindEvents() {
   document.getElementById("preset-select").addEventListener("change", (e) => {
-    const [lat, lng] = e.target.value.split(",");
-    document.getElementById("input-lat").value = lat;
-    document.getElementById("input-lng").value = lng;
+    const idx = Number(e.target.value);
+    const p = DATASETS[currentDatasetKey].presets[idx];
+    if (p) {
+      document.getElementById("lat-input").value = p.lat.toFixed(4);
+      document.getElementById("lng-input").value = p.lng.toFixed(4);
+      runCalculation();
+    }
   });
 
-  document.getElementById("btn-gps").addEventListener("click", () => {
+  ["lat-input", "lng-input", "radius-input"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", runCalculation);
+  });
+
+  document.querySelectorAll('input[name="combined-mode"]').forEach((r) => {
+    r.addEventListener("change", runCalculation);
+  });
+
+  document.querySelectorAll('input[name="dataset-mode"]').forEach((r) => {
+    r.addEventListener("change", (e) => {
+      loadDataset(e.target.value);
+    });
+  });
+
+  document.getElementById("eval-type-select").addEventListener("change", renderTables);
+
+  document.getElementById("default-words-btn").addEventListener("click", () => {
+    setSelectedWords(DEFAULT_SELECTED);
+    runCalculation();
+  });
+
+  document.getElementById("clear-words-btn").addEventListener("click", () => {
+    setSelectedWords([]);
+    runCalculation();
+  });
+
+  document.getElementById("gps-btn").addEventListener("click", () => {
     if (!navigator.geolocation) {
-      alert("このブラウザは位置情報取得に対応していません。");
+      alert("このブラウザはGPS取得に対応していません。");
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        document.getElementById("input-lat").value = pos.coords.latitude.toFixed(6);
-        document.getElementById("input-lng").value = pos.coords.longitude.toFixed(6);
+        document.getElementById("lat-input").value = pos.coords.latitude.toFixed(4);
+        document.getElementById("lng-input").value = pos.coords.longitude.toFixed(4);
+        runCalculation();
       },
-      (err) => alert("現在地を取得できませんでした: " + err.message)
+      (err) => alert(`位置情報の取得に失敗しました: ${err.message}`)
     );
   });
 
-  document.getElementById("btn-preset-words").addEventListener("click", () => {
-    selectPresetWords(DEFAULT_WORDS);
-  });
-
-  document.getElementById("btn-clear-words").addEventListener("click", () => {
-    selectPresetWords([]);
-  });
-
-  document.getElementById("btn-run").addEventListener("click", runCalculation);
-
-  // 評価タイプ変更時は即座に個別Top-5を再描画
-  document.getElementById("ge-mode").addEventListener("change", renderSingleTop5);
-
-  // 総合空間の計算方式（54語/40語）切替時も即再計算
-  document.querySelectorAll('input[name="total-mode"]').forEach((r) => {
-    r.addEventListener("change", () => {
-      if (db) runCalculation();
-    });
-  });
-
-  document.getElementById("btn-copy-all7").addEventListener("click", () => copyTableCSV("table-all7"));
-  document.getElementById("btn-copy-spaces").addEventListener("click", () => copyTableCSV("table-spaces"));
+  document.getElementById("copy-compare-csv").addEventListener("click", () => copyTableCsv("compare-table"));
+  document.getElementById("copy-all-csv").addEventListener("click", () => copyTableCsv("all-ranking-table"));
 }
 
-// =========================================================================
-// SQL生成と実行（大円距離・正規化内積・評価関数GE）
-// =========================================================================
-function buildCosineExpr(aliasMat, aliasIn, words) {
-  const num = words.map((w) => `(${aliasMat}.\`${w}\` * ${aliasIn}.\`${w}\`)`).join(" + ");
-  const denMat = words.map((w) => `POW(${aliasMat}.\`${w}\`, 2)`).join(" + ");
-  const denIn = words.map((w) => `POW(${aliasIn}.\`${w}\`, 2)`).join(" + ");
-  return `ROUND(COALESCE((${num}) / NULLIF(SQRT(${denMat}) * SQRT(${denIn}), 0), 0), 4)`;
+function setSelectedWords(wordList) {
+  const set = new Set(wordList);
+  document.querySelectorAll("#words-grid input[type='checkbox']").forEach((cb) => {
+    cb.checked = set.has(cb.value);
+    cb.closest(".word-chip").classList.toggle("selected", cb.checked);
+  });
 }
 
-function buildTotalCosineExpr(mode) {
-  if (mode === "54") {
-    // 54語連結モデル（重複許容・元データ-1/0/1を加工せず連結）
-    const termsNum = [
-      ...MOVE_WORDS.map((w) => `(mv.\`${w}\` * imv.\`${w}\`)`),
-      ...STAY_WORDS.map((w) => `(st.\`${w}\` * ist.\`${w}\`)`),
-      ...SPACE_WORDS.map((w) => `(sp.\`${w}\` * isp.\`${w}\`)`)
-    ].join(" + ");
-
-    const termsMat = [
-      ...MOVE_WORDS.map((w) => `POW(mv.\`${w}\`, 2)`),
-      ...STAY_WORDS.map((w) => `POW(st.\`${w}\`, 2)`),
-      ...SPACE_WORDS.map((w) => `POW(sp.\`${w}\`, 2)`)
-    ].join(" + ");
-
-    const termsIn = [
-      ...MOVE_WORDS.map((w) => `POW(imv.\`${w}\`, 2)`),
-      ...STAY_WORDS.map((w) => `POW(ist.\`${w}\`, 2)`),
-      ...SPACE_WORDS.map((w) => `POW(isp.\`${w}\`, 2)`)
-    ].join(" + ");
-
-    return `ROUND(COALESCE((${termsNum}) / NULLIF(SQRT(${termsMat}) * SQRT(${termsIn}), 0), 0), 4)`;
-  }
-
-  // 40語統合モデル（共通語は平均値で1次元に統合）
-  const numParts = [];
-  const matParts = [];
-  const inParts = [];
-
-  UNIQUE_WORDS.forEach((w) => {
-    const mats = [];
-    const ins = [];
-    if (MOVE_WORDS.includes(w)) { mats.push(`mv.\`${w}\``); ins.push(`imv.\`${w}\``); }
-    if (STAY_WORDS.includes(w)) { mats.push(`st.\`${w}\``); ins.push(`ist.\`${w}\``); }
-    if (SPACE_WORDS.includes(w)) { mats.push(`sp.\`${w}\``); ins.push(`isp.\`${w}\``); }
-
-    const matExpr = mats.length === 1 ? mats[0] : `((${mats.join(" + ")}) / ${mats.length}.0)`;
-    const inExpr = ins.length === 1 ? ins[0] : `MAX(${ins.join(", ")})`;
-
-    numParts.push(`(${matExpr} * ${inExpr})`);
-    matParts.push(`POW(${matExpr}, 2)`);
-    inParts.push(`POW(${inExpr}, 2)`);
+function getSelectedWords() {
+  const selected = new Set();
+  document.querySelectorAll("#words-grid input[type='checkbox']:checked").forEach((cb) => {
+    selected.add(cb.value);
   });
+  return selected;
+}
 
-  return `ROUND(COALESCE((${numParts.join(" + ")}) / NULLIF(SQRT(${matParts.join(" + ")}) * SQRT(${inParts.join(" + ")}), 0), 0), 4)`;
+// --------------------------------------------------------------------
+// SQL生成・実行（大円距離フィルタ + 正規化内積）
+// --------------------------------------------------------------------
+function buildDotExpr(alias, words, selectedSet) {
+  const terms = words.filter((w) => selectedSet.has(w)).map((w) => `${alias}.\`${w}\``);
+  return terms.length > 0 ? terms.join(" + ") : "0.0";
+}
+
+function buildNormSqExpr(alias, words) {
+  return words.map((w) => `(${alias}.\`${w}\` * ${alias}.\`${w}\`)`).join(" + ");
 }
 
 function runCalculation() {
-  const lat = parseFloat(document.getElementById("input-lat").value);
-  const lng = parseFloat(document.getElementById("input-lng").value);
-  const radius = parseFloat(document.getElementById("input-radius").value);
-  const selected = new Set(getSelectedWords());
-  const totalMode = document.querySelector('input[name="total-mode"]:checked').value;
+  if (!db) return;
+  const lat = parseFloat(document.getElementById("lat-input").value);
+  const lng = parseFloat(document.getElementById("lng-input").value);
+  const radius = parseFloat(document.getElementById("radius-input").value);
+  if (Number.isNaN(lat) || Number.isNaN(lng) || Number.isNaN(radius)) return;
 
-  if (isNaN(lat) || isNaN(lng) || isNaN(radius) || radius <= 0) {
-    alert("緯度・経度・検索半径を正しく入力してください。");
-    return;
-  }
-  if (selected.size === 0) {
-    alert("印象語を1つ以上選択してください。");
-    return;
-  }
+  const selected = getSelectedWords();
+  const mode = document.querySelector('input[name="combined-mode"]:checked').value;
 
-  // ユーザー入力テーブルと現在地テーブルを更新
-  const mvVals = MOVE_WORDS.map((w) => (selected.has(w) ? 1 : 0)).join(", ");
-  const stVals = STAY_WORDS.map((w) => (selected.has(w) ? 1 : 0)).join(", ");
-  const spVals = SPACE_WORDS.map((w) => (selected.has(w) ? 1 : 0)).join(", ");
+  const qMSCount = MS_WORDS.filter((w) => selected.has(w)).length;
+  const qSSCount = SS_WORDS.filter((w) => selected.has(w)).length;
+  const qASCount = AS_WORDS.filter((w) => selected.has(w)).length;
 
-  db.run(`
-    DELETE FROM current_location;
-    INSERT INTO current_location VALUES ('指定現在地', ${lat}, ${lng}, ${radius});
-    DELETE FROM input_move;
-    INSERT INTO input_move VALUES (${mvVals});
-    DELETE FROM input_stay;
-    INSERT INTO input_stay VALUES (${stVals});
-    DELETE FROM input_space;
-    INSERT INTO input_space VALUES (${spVals});
-  `);
+  const dotMS = buildDotExpr("m", MS_WORDS, selected);
+  const dotSS = buildDotExpr("s", SS_WORDS, selected);
+  const dotAS = buildDotExpr("a", AS_WORDS, selected);
 
-  const totalExpr = buildTotalCosineExpr(totalMode);
-  const mvExpr = buildCosineExpr("mv", "imv", MOVE_WORDS);
-  const stExpr = buildCosineExpr("st", "ist", STAY_WORDS);
-  const spExpr = buildCosineExpr("sp", "isp", SPACE_WORDS);
+  const normSqMS = buildNormSqExpr("m", MS_WORDS);
+  const normSqSS = buildNormSqExpr("s", SS_WORDS);
+  const normSqAS = buildNormSqExpr("a", AS_WORDS);
 
-  // 大円距離絞り込み ＋ 4空間相関量 ＋ 評価関数GE（7タイプ）を一括算出するSQL
-  const query = `
-WITH nearby_spots AS (
-  SELECT
-    s.観光地名,
-    s.緯度,
-    s.経度,
-    ROUND(
-      6371.0 * ACOS(
-        MIN(1.0, MAX(-1.0,
-          COS(RADIANS(c.緯度)) * COS(RADIANS(s.緯度)) * COS(RADIANS(s.経度) - RADIANS(c.経度))
-          + SIN(RADIANS(c.緯度)) * SIN(RADIANS(s.緯度))
-        ))
-      ), 3
-    ) AS 距離_km
-  FROM spots s
-  CROSS JOIN current_location c
-  WHERE (
-    6371.0 * ACOS(
-      MIN(1.0, MAX(-1.0,
-        COS(RADIANS(c.緯度)) * COS(RADIANS(s.緯度)) * COS(RADIANS(s.経度) - RADIANS(c.経度))
-        + SIN(RADIANS(c.緯度)) * SIN(RADIANS(s.緯度))
-      ))
-    )
-  ) <= c.検索半径_km
-),
-all_scores AS (
-  SELECT
-    s.観光地名,
-    s.距離_km,
-    ${totalExpr} AS total_corr,
-    ${mvExpr} AS mv_corr,
-    ${stExpr} AS st_corr,
-    ${spExpr} AS sp_corr
-  FROM nearby_spots s
-  JOIN move_matrix mv ON s.観光地名 = mv.観光地名
-  JOIN stay_matrix st ON s.観光地名 = st.観光地名
-  JOIN space_matrix sp ON s.観光地名 = sp.観光地名
-  CROSS JOIN input_move imv
-  CROSS JOIN input_stay ist
-  CROSS JOIN input_space isp
-)
-SELECT
-  観光地名,
-  距離_km,
-  total_corr,
-  mv_corr,
-  st_corr,
-  sp_corr,
-  ROUND(0.5 * mv_corr + 0.5 * st_corr + 0.5 * sp_corr, 4) AS grand_score,
-  ROUND(1.0 * mv_corr + 0.1 * st_corr + 0.1 * sp_corr, 4) AS move_score,
-  ROUND(0.1 * mv_corr + 1.0 * st_corr + 0.1 * sp_corr, 4) AS stay_score,
-  ROUND(0.1 * mv_corr + 0.1 * st_corr + 1.0 * sp_corr, 4) AS space_score,
-  ROUND(0.5 * mv_corr + 0.5 * st_corr + 0.1 * sp_corr, 4) AS mv_st_score,
-  ROUND(0.5 * mv_corr + 0.1 * st_corr + 0.5 * sp_corr, 4) AS mv_sp_score,
-  ROUND(0.1 * mv_corr + 0.5 * st_corr + 0.5 * sp_corr, 4) AS st_sp_score
-FROM all_scores;
-  `.trim();
+  const xMSExpr = qMSCount === 0
+    ? "0.0"
+    : `CASE WHEN (${normSqMS}) = 0 THEN 0.0 ELSE (${dotMS}) * 1.0 / (SQRT(${normSqMS}) * SQRT(${qMSCount})) END`;
 
-  document.getElementById("sql-preview").textContent = query;
+  const xSSExpr = qSSCount === 0
+    ? "0.0"
+    : `CASE WHEN (${normSqSS}) = 0 THEN 0.0 ELSE (${dotSS}) * 1.0 / (SQRT(${normSqSS}) * SQRT(${qSSCount})) END`;
 
-  const res = db.exec(query);
-  const resultsArea = document.getElementById("results-area");
-  resultsArea.classList.remove("hidden");
+  const xASExpr = qASCount === 0
+    ? "0.0"
+    : `CASE WHEN (${normSqAS}) = 0 THEN 0.0 ELSE (${dotAS}) * 1.0 / (SQRT(${normSqAS}) * SQRT(${qASCount})) END`;
 
-  if (!res.length || res[0].values.length === 0) {
-    lastRows = [];
-    document.getElementById("filter-summary").textContent =
-      `現在地 (${lat}, ${lng}) から半径 ${radius} km 以内に該当スポットがありませんでした。検索半径を広げるかプリセット位置をお試しください。`;
-    document.getElementById("table-single-top5").innerHTML = "";
-    document.getElementById("table-all7").innerHTML = "";
-    document.getElementById("table-spaces").innerHTML = "";
-    return;
+  let xAllExpr = "0.0";
+  if (mode === "54") {
+    const q54Count = qMSCount + qSSCount + qASCount;
+    if (q54Count > 0) {
+      const dot54 = `(${dotMS}) + (${dotSS}) + (${dotAS})`;
+      const normSq54 = `(${normSqMS}) + (${normSqSS}) + (${normSqAS})`;
+      xAllExpr = `CASE WHEN (${normSq54}) = 0 THEN 0.0 ELSE (${dot54}) * 1.0 / (SQRT(${normSq54}) * SQRT(${q54Count})) END`;
+    }
+  } else {
+    const q40Count = selected.size;
+    if (q40Count > 0) {
+      const avgExprs = ALL_WORDS.map((w) => {
+        const parts = [];
+        if (WORD_SPACES[w].ms) parts.push(`m.\`${w}\``);
+        if (WORD_SPACES[w].ss) parts.push(`s.\`${w}\``);
+        if (WORD_SPACES[w].as) parts.push(`a.\`${w}\``);
+        return parts.length === 1 ? `(${parts[0]} * 1.0)` : `((${parts.join(" + ")}) * 1.0 / ${parts.length})`;
+      });
+      const dot40Terms = ALL_WORDS
+        .map((w, i) => (selected.has(w) ? avgExprs[i] : null))
+        .filter(Boolean);
+      const dot40 = dot40Terms.length > 0 ? dot40Terms.join(" + ") : "0.0";
+      const normSq40 = avgExprs.map((e) => `(${e} * ${e})`).join(" + ");
+      xAllExpr = `CASE WHEN (${normSq40}) = 0 THEN 0.0 ELSE (${dot40}) / (SQRT(${normSq40}) * SQRT(${q40Count})) END`;
+    }
   }
 
-  const cols = res[0].columns;
-  lastRows = res[0].values.map((row) => {
-    const obj = {};
-    cols.forEach((c, idx) => (obj[c] = row[idx]));
-    return obj;
-  });
+  const distExpr = `6371.0 * ACOS(COS(RADIANS(${lat})) * COS(RADIANS(sp.緯度)) * COS(RADIANS(sp.経度) - RADIANS(${lng})) + SIN(RADIANS(${lat})) * SIN(RADIANS(sp.緯度)))`;
 
-  const modeLabel = totalMode === "54" ? "54語連結モデル（重複許容）" : "40語統合モデル（平均値）";
-  document.getElementById("filter-summary").textContent =
-    `絞り込み結果：現在地 (${lat}, ${lng}) から半径 ${radius} km 以内に ${lastRows.length} 地点が該当（総合空間：${modeLabel}）`;
+  const sql = `
+    SELECT
+      sp.観光地名 AS name,
+      ${distExpr} AS dist,
+      ${xMSExpr} AS x_ms,
+      ${xSSExpr} AS x_ss,
+      ${xASExpr} AS x_as,
+      ${xAllExpr} AS x_all
+    FROM spots sp
+    JOIN move_matrix m ON sp.観光地名 = m.観光地名
+    JOIN stay_matrix s ON sp.観光地名 = s.観光地名
+    JOIN space_matrix a ON sp.観光地名 = a.観光地名
+    WHERE ${distExpr} <= ${radius}
+    ORDER BY dist ASC, sp.観光地名 ASC;
+  `;
 
-  renderSingleTop5();
-  renderAll7Comparison();
-  renderSpaceRankings();
+  try {
+    const res = db.exec(sql);
+    if (!res.length) {
+      lastRows = [];
+    } else {
+      lastRows = res[0].values.map(([name, dist, x_ms, x_ss, x_as, x_all]) => {
+        const row = { name, dist, x_ms, x_ss, x_as, x_all, scores: {} };
+        EVAL_TYPES.forEach((t) => {
+          row.scores[t.key] = t.wMS * x_ms + t.wSS * x_ss + t.wAS * x_as;
+        });
+        return row;
+      });
+    }
+    renderTables();
+  } catch (err) {
+    console.error("SQL Error:", err);
+  }
 }
 
-// ランキング並び替え（SQLの ORDER BY score DESC, 距離_km ASC, 観光地名 ASC と同一規則）
-function sortByScore(rows, scoreKey) {
+function sortByMetric(rows, getter) {
   return [...rows].sort((a, b) => {
-    if (b[scoreKey] !== a[scoreKey]) return b[scoreKey] - a[scoreKey];
-    if (a.距離_km !== b.距離_km) return a.距離_km - b.距離_km;
-    return a.観光地名.localeCompare(b.観光地名, "ja");
+    const diff = getter(b) - getter(a);
+    if (Math.abs(diff) > 1e-12) return diff;
+    const distDiff = a.dist - b.dist;
+    if (Math.abs(distDiff) > 1e-12) return distDiff;
+    return a.name.localeCompare(b.name, "ja");
   });
 }
 
-// =========================================================================
-// テーブル描画
-// =========================================================================
-function renderSingleTop5() {
-  if (!lastRows.length) return;
-  const modeKey = document.getElementById("ge-mode").value;
-  const ge = GE_TYPES.find((g) => g.key === modeKey);
-  const [wMs, wSs, wAs] = ge.w;
+// --------------------------------------------------------------------
+// 結果テーブル描画
+// --------------------------------------------------------------------
+function renderTables() {
+  const evalKey = document.getElementById("eval-type-select").value;
+  const evalObj = EVAL_TYPES.find((t) => t.key === evalKey) || EVAL_TYPES[0];
 
-  document.getElementById("ge-formula-desc").textContent =
-    `計算式：T = ${wMs} × x_MS（移動） + ${wSs} × x_SS（滞在） + ${wAs} × x_AS（活動）`;
+  document.getElementById("formula-text").textContent =
+    `計算式：T = ${evalObj.wMS} × x_MS (移動) + ${evalObj.wSS} × x_SS (滞在) + ${evalObj.wAS} × x_AS (活動)`;
+  document.getElementById("hit-count").textContent = `（該当：${lastRows.length}件）`;
 
-  const top5 = sortByScore(lastRows, ge.col).slice(0, 5);
-  const table = document.getElementById("table-single-top5");
-
-  table.innerHTML = `
-    <thead>
+  // ② 個別Top-5
+  const top5Body = document.querySelector("#top5-table tbody");
+  const sortedEval = sortByMetric(lastRows, (r) => r.scores[evalKey]).slice(0, 5);
+  if (sortedEval.length === 0) {
+    top5Body.innerHTML = '<tr><td colspan="8" class="empty-cell">指定範囲内にスポットがありません（検索半径を広げるか、現在地を変更してください）</td></tr>';
+  } else {
+    top5Body.innerHTML = sortedEval.map((r, i) => `
       <tr>
-        <th>順位</th>
-        <th>観光地名</th>
-        <th>評価スコア T</th>
-        <th>距離 (km)</th>
-        <th>移動相関 (x_MS)</th>
-        <th>滞在相関 (x_SS)</th>
-        <th>活動相関 (x_AS)</th>
-        <th class="col-base">参考：総合空間</th>
+        <td class="num bold">${i + 1}</td>
+        <td>${escapeHtml(r.name)}</td>
+        <td class="num bold">${r.scores[evalKey].toFixed(4)}</td>
+        <td class="num">${r.dist.toFixed(3)}</td>
+        <td class="num">${r.x_ms.toFixed(4)}</td>
+        <td class="num">${r.x_ss.toFixed(4)}</td>
+        <td class="num">${r.x_as.toFixed(4)}</td>
+        <td class="num">${r.x_all.toFixed(4)}</td>
       </tr>
-    </thead>
-    <tbody>
-      ${top5.map((r, i) => `
-        <tr>
-          <td class="rank">${i + 1}</td>
-          <td>${r.観光地名}</td>
-          <td class="num"><strong>${Number(r[ge.col]).toFixed(4)}</strong></td>
-          <td class="num">${Number(r.距離_km).toFixed(3)}</td>
-          <td class="num">${Number(r.mv_corr).toFixed(4)}</td>
-          <td class="num">${Number(r.st_corr).toFixed(4)}</td>
-          <td class="num">${Number(r.sp_corr).toFixed(4)}</td>
-          <td class="num">${Number(r.total_corr).toFixed(4)}</td>
-        </tr>
-      `).join("")}
-    </tbody>
-  `;
-}
-
-function renderAll7Comparison() {
-  if (!lastRows.length) return;
-  const maxRank = Math.min(5, lastRows.length);
-
-  const columns = [
-    { label: "総合空間（基準）", key: "total_corr", isBase: true },
-    ...GE_TYPES.map((g) => ({ label: g.label, key: g.col, isBase: false }))
-  ];
-
-  const rankedLists = columns.map((col) => sortByScore(lastRows, col.key).slice(0, maxRank));
-  const table = document.getElementById("table-all7");
-
-  const thead = `
-    <thead>
-      <tr>
-        <th>順位</th>
-        ${columns.map((c) => `<th class="${c.isBase ? "col-base" : ""}">${c.label}</th>`).join("")}
-      </tr>
-    </thead>
-  `;
-
-  let tbody = "<tbody>";
-  for (let i = 0; i < maxRank; i++) {
-    tbody += `<tr><td class="rank">${i + 1}</td>`;
-    columns.forEach((col, cIdx) => {
-      const r = rankedLists[cIdx][i];
-      tbody += `
-        <td class="spot-cell">
-          ${r.観光地名}
-          <span class="score-sub">${Number(r[col.key]).toFixed(4)} (${Number(r.距離_km).toFixed(2)}km)</span>
-        </td>
-      `;
-    });
-    tbody += "</tr>";
+    `).join("");
   }
-  tbody += "</tbody>";
 
-  table.innerHTML = thead + tbody;
-}
-
-function renderSpaceRankings() {
-  if (!lastRows.length) return;
-  const rTot = sortByScore(lastRows, "total_corr");
-  const rMv = sortByScore(lastRows, "mv_corr");
-  const rSt = sortByScore(lastRows, "st_corr");
-  const rSp = sortByScore(lastRows, "sp_corr");
-
-  const table = document.getElementById("table-spaces");
-  let tbody = "<tbody>";
-  for (let i = 0; i < lastRows.length; i++) {
-    tbody += `
-      <tr>
-        <td class="rank">${i + 1}</td>
-        <td class="spot-cell">${rTot[i].観光地名}</td>
-        <td class="num">${Number(rTot[i].total_corr).toFixed(4)}</td>
-        <td class="spot-cell">${rMv[i].観光地名}</td>
-        <td class="num">${Number(rMv[i].mv_corr).toFixed(4)}</td>
-        <td class="spot-cell">${rSt[i].観光地名}</td>
-        <td class="num">${Number(rSt[i].st_corr).toFixed(4)}</td>
-        <td class="spot-cell">${rSp[i].観光地名}</td>
-        <td class="num">${Number(rSp[i].sp_corr).toFixed(4)}</td>
-      </tr>
-    `;
+  // ②-2 全7タイプ + 総合空間 一括比較（上位5位）
+  const compareBody = document.querySelector("#compare-table tbody");
+  if (lastRows.length === 0) {
+    compareBody.innerHTML = '<tr><td colspan="9" class="empty-cell">該当データなし</td></tr>';
+  } else {
+    const colLists = [
+      sortByMetric(lastRows, (r) => r.x_all).map((r) => ({ name: r.name, val: r.x_all, dist: r.dist })),
+      ...EVAL_TYPES.map((t) =>
+        sortByMetric(lastRows, (r) => r.scores[t.key]).map((r) => ({ name: r.name, val: r.scores[t.key], dist: r.dist }))
+      )
+    ];
+    const maxRank = Math.min(5, lastRows.length);
+    let html = "";
+    for (let rank = 0; rank < maxRank; rank++) {
+      html += `<tr><td class="num bold">${rank + 1}</td>`;
+      for (const list of colLists) {
+        const item = list[rank];
+        html += `<td><div class="spot-name">${escapeHtml(item.name)}</div><div class="spot-meta">${item.val.toFixed(4)} (${item.dist.toFixed(2)}km)</div></td>`;
+      }
+      html += "</tr>";
+    }
+    compareBody.innerHTML = html;
   }
-  tbody += "</tbody>";
 
-  table.innerHTML = `
-    <thead>
+  // ③ 空間別相関量ランキング（絞り込み全件）
+  const allBody = document.querySelector("#all-ranking-table tbody");
+  if (lastRows.length === 0) {
+    allBody.innerHTML = '<tr><td colspan="9" class="empty-cell">該当データなし</td></tr>';
+  } else {
+    const byAll = sortByMetric(lastRows, (r) => r.x_all);
+    const byMS  = sortByMetric(lastRows, (r) => r.x_ms);
+    const bySS  = sortByMetric(lastRows, (r) => r.x_ss);
+    const byAS  = sortByMetric(lastRows, (r) => r.x_as);
+
+    allBody.innerHTML = lastRows.map((_, i) => `
       <tr>
-        <th>順位</th>
-        <th class="col-base">総合空間_観光地</th>
-        <th class="col-base">総合_相関量</th>
-        <th>移動空間_観光地</th>
-        <th>移動 (x_MS)</th>
-        <th>滞在空間_観光地</th>
-        <th>滞在 (x_SS)</th>
-        <th>活動空間_観光地</th>
-        <th>活動 (x_AS)</th>
+        <td class="num bold">${i + 1}</td>
+        <td>${escapeHtml(byAll[i].name)}</td>
+        <td class="num">${byAll[i].x_all.toFixed(4)}</td>
+        <td>${escapeHtml(byMS[i].name)}</td>
+        <td class="num">${byMS[i].x_ms.toFixed(4)}</td>
+        <td>${escapeHtml(bySS[i].name)}</td>
+        <td class="num">${bySS[i].x_ss.toFixed(4)}</td>
+        <td>${escapeHtml(byAS[i].name)}</td>
+        <td class="num">${byAS[i].x_as.toFixed(4)}</td>
       </tr>
-    </thead>
-    ${tbody}
-  `;
+    `).join("");
+  }
 }
 
-// =========================================================================
-// 論文・Excel転用用 CSVコピー
-// =========================================================================
-function copyTableCSV(tableId) {
-  const table = document.getElementById(tableId);
-  const rows = Array.from(table.querySelectorAll("tr")).map((tr) =>
-    Array.from(tr.querySelectorAll("th, td"))
-      .map((cell) => `"${cell.innerText.replace(/\s+/g, " ").trim().replace(/"/g, '""')}"`)
-      .join(",")
-  );
-  navigator.clipboard.writeText(rows.join("\n")).then(() => {
-    alert("CSV形式でクリップボードにコピーしました。Excelやスプレッドシートに貼り付けられます。");
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (m) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[m]));
+}
+
+function copyTableCsv(tableId) {
+  const rows = Array.from(document.querySelectorAll(`#${tableId} tr`));
+  const csv = rows.map((tr) =>
+    Array.from(tr.children).map((cell) => {
+      const txt = cell.innerText.replace(/\s+/g, " ").trim().replace(/"/g, '""');
+      return `"${txt}"`;
+    }).join(",")
+  ).join("\n");
+
+  navigator.clipboard.writeText(csv).then(() => {
+    alert("CSVをクリップボードにコピーしました。");
   });
 }
 
-window.addEventListener("DOMContentLoaded", init);
+document.addEventListener("DOMContentLoaded", initApp);
