@@ -1,5 +1,6 @@
 // ====================================================================
-// 3空間感性・観光地推薦 検証プロトタイプ (神戸・京都 切り替え対応版)
+// 3空間感性・観光地推薦 検証プロトタイプ
+// （ステップ1〜5明示 / 時系列レイアウト / 神戸・京都対応 最終版）
 // ====================================================================
 
 const DATASETS = {
@@ -56,8 +57,9 @@ const AS_WORDS = [
 
 const DEFAULT_SELECTED = ["スムーズな", "快適", "落ち着いた", "静寂な", "ゆっくり", "非日常的な"];
 
+// 大局観の重みを (1.0, 1.0, 1.0) に設定
 const EVAL_TYPES = [
-  { key: "taikyoku", label: "(i) 大局観 (0.5, 0.5, 0.5)", wMS: 0.5, wSS: 0.5, wAS: 0.5 },
+  { key: "taikyoku", label: "(i) 大局観 (1.0, 1.0, 1.0)", wMS: 1.0, wSS: 1.0, wAS: 1.0 },
   { key: "move",     label: "(ii) 移動型 (1.0, 0.1, 0.1)", wMS: 1.0, wSS: 0.1, wAS: 0.1 },
   { key: "stay",     label: "(iii) 滞在型 (0.1, 1.0, 0.1)", wMS: 0.1, wSS: 1.0, wAS: 0.1 },
   { key: "act",      label: "(iv) 活動型 (0.1, 0.1, 1.0)", wMS: 0.1, wSS: 0.1, wAS: 1.0 },
@@ -90,6 +92,7 @@ let lastRows = [];
 // 初期化
 // --------------------------------------------------------------------
 async function initApp() {
+  applyChronologicalLayout();
   buildEvalSelect();
   buildWordsGrid();
   bindEvents();
@@ -103,6 +106,45 @@ async function initApp() {
   } catch (err) {
     console.error(err);
     setStatus(`初期化エラー: ${err.message}`, "error");
+  }
+}
+
+// 計算手順どおりの時系列順（②空間別相関量 → ③評価関数GE → ③-2一括比較）へ配置変更
+function applyChronologicalLayout() {
+  const top5Section = document.getElementById("top5-table")?.closest("section.card");
+  const compareSection = document.getElementById("compare-table")?.closest("section.card");
+  const allRankingSection = document.getElementById("all-ranking-table")?.closest("section.card");
+
+  if (top5Section && compareSection && allRankingSection && top5Section.parentElement) {
+    // 空間別相関量ランキングを評価関数GEより前に配置
+    top5Section.parentElement.insertBefore(allRankingSection, top5Section);
+
+    // 見出し番号を時系列に更新
+    const allTitle = allRankingSection.querySelector(".section-title");
+    if (allTitle) {
+      allTitle.innerHTML = '② 空間別相関量ランキング（絞り込み全件）<span id="hit-count" class="hit-count"></span>';
+    }
+    const top5Title = top5Section.querySelector(".section-title");
+    if (top5Title) {
+      top5Title.textContent = "③ 評価関数 GE による推薦結果（上位5位）";
+    }
+    const compareTitle = compareSection.querySelector(".section-title");
+    if (compareTitle) {
+      compareTitle.textContent = "③-2 全7タイプ + 総合空間（比較基準）一括比較（上位5位）";
+    }
+
+    // ②の全件テーブルを縦スクロール枠（ヘッダー固定）にする
+    const wrap = allRankingSection.querySelector(".table-wrap");
+    if (wrap) {
+      wrap.style.maxHeight = "340px";
+      wrap.style.overflowY = "auto";
+      wrap.style.borderBottom = "1px solid #e5e7eb";
+    }
+    allRankingSection.querySelectorAll("#all-ranking-table thead th").forEach((th) => {
+      th.style.position = "sticky";
+      th.style.top = "0";
+      th.style.zIndex = "1";
+    });
   }
 }
 
@@ -173,6 +215,7 @@ function populatePresets(cfg) {
 
 function buildEvalSelect() {
   const sel = document.getElementById("eval-type-select");
+  sel.innerHTML = "";
   EVAL_TYPES.forEach((t) => {
     const opt = document.createElement("option");
     opt.value = t.key;
@@ -291,15 +334,19 @@ function getSelectedWords() {
 }
 
 // --------------------------------------------------------------------
-// SQL生成・実行（大円距離フィルタ + 正規化内積）
+// SQL生成・実行（ステップ1〜4をCTEで明示的に段階実行）
 // --------------------------------------------------------------------
-function buildDotExpr(alias, words, selectedSet) {
-  const terms = words.filter((w) => selectedSet.has(w)).map((w) => `${alias}.\`${w}\``);
+function buildDotExpr(alias, words, selectedSet, prefix = "") {
+  const terms = words
+    .filter((w) => selectedSet.has(w))
+    .map((w) => `${alias}.\`${prefix}${w}\``);
   return terms.length > 0 ? terms.join(" + ") : "0.0";
 }
 
-function buildNormSqExpr(alias, words) {
-  return words.map((w) => `(${alias}.\`${w}\` * ${alias}.\`${w}\`)`).join(" + ");
+function buildNormSqExpr(alias, words, prefix = "") {
+  return words
+    .map((w) => `(${alias}.\`${prefix}${w}\` * ${alias}.\`${prefix}${w}\`)`)
+    .join(" + ");
 }
 
 function runCalculation() {
@@ -316,6 +363,7 @@ function runCalculation() {
   const qSSCount = SS_WORDS.filter((w) => selected.has(w)).length;
   const qASCount = AS_WORDS.filter((w) => selected.has(w)).length;
 
+  // ステップ4用：各空間の正規化内積
   const dotMS = buildDotExpr("m", MS_WORDS, selected);
   const dotSS = buildDotExpr("s", SS_WORDS, selected);
   const dotAS = buildDotExpr("a", AS_WORDS, selected);
@@ -336,49 +384,97 @@ function runCalculation() {
     ? "0.0"
     : `CASE WHEN (${normSqAS}) = 0 THEN 0.0 ELSE (${dotAS}) * 1.0 / (SQRT(${normSqAS}) * SQRT(${qASCount})) END`;
 
+  // ステップ3用：総合空間マトリクス（M'_T）の列定義 & ステップ4の正規化内積
+  let combinedSelectCols = "";
   let xAllExpr = "0.0";
+
   if (mode === "54") {
+    const cols = [
+      ...MS_WORDS.map((w) => `m.\`${w}\` AS \`ms_${w}\``),
+      ...SS_WORDS.map((w) => `s.\`${w}\` AS \`ss_${w}\``),
+      ...AS_WORDS.map((w) => `a.\`${w}\` AS \`as_${w}\``)
+    ];
+    combinedSelectCols = cols.join(",\n      ");
+
     const q54Count = qMSCount + qSSCount + qASCount;
     if (q54Count > 0) {
-      const dot54 = `(${dotMS}) + (${dotSS}) + (${dotAS})`;
-      const normSq54 = `(${normSqMS}) + (${normSqSS}) + (${normSqAS})`;
+      const dot54 = `(${buildDotExpr("c", MS_WORDS, selected, "ms_")}) + (${buildDotExpr("c", SS_WORDS, selected, "ss_")}) + (${buildDotExpr("c", AS_WORDS, selected, "as_")})`;
+      const normSq54 = `(${buildNormSqExpr("c", MS_WORDS, "ms_")}) + (${buildNormSqExpr("c", SS_WORDS, "ss_")}) + (${buildNormSqExpr("c", AS_WORDS, "as_")})`;
       xAllExpr = `CASE WHEN (${normSq54}) = 0 THEN 0.0 ELSE (${dot54}) * 1.0 / (SQRT(${normSq54}) * SQRT(${q54Count})) END`;
     }
   } else {
+    const cols = ALL_WORDS.map((w) => {
+      const parts = [];
+      if (WORD_SPACES[w].ms) parts.push(`m.\`${w}\``);
+      if (WORD_SPACES[w].ss) parts.push(`s.\`${w}\``);
+      if (WORD_SPACES[w].as) parts.push(`a.\`${w}\``);
+      return parts.length === 1
+        ? `(${parts[0]} * 1.0) AS \`${w}\``
+        : `((${parts.join(" + ")}) * 1.0 / ${parts.length}) AS \`${w}\``;
+    });
+    combinedSelectCols = cols.join(",\n      ");
+
     const q40Count = selected.size;
     if (q40Count > 0) {
-      const avgExprs = ALL_WORDS.map((w) => {
-        const parts = [];
-        if (WORD_SPACES[w].ms) parts.push(`m.\`${w}\``);
-        if (WORD_SPACES[w].ss) parts.push(`s.\`${w}\``);
-        if (WORD_SPACES[w].as) parts.push(`a.\`${w}\``);
-        return parts.length === 1 ? `(${parts[0]} * 1.0)` : `((${parts.join(" + ")}) * 1.0 / ${parts.length})`;
-      });
-      const dot40Terms = ALL_WORDS
-        .map((w, i) => (selected.has(w) ? avgExprs[i] : null))
-        .filter(Boolean);
-      const dot40 = dot40Terms.length > 0 ? dot40Terms.join(" + ") : "0.0";
-      const normSq40 = avgExprs.map((e) => `(${e} * ${e})`).join(" + ");
-      xAllExpr = `CASE WHEN (${normSq40}) = 0 THEN 0.0 ELSE (${dot40}) / (SQRT(${normSq40}) * SQRT(${q40Count})) END`;
+      const dot40 = buildDotExpr("c", ALL_WORDS, selected);
+      const normSq40 = buildNormSqExpr("c", ALL_WORDS);
+      xAllExpr = `CASE WHEN (${normSq40}) = 0 THEN 0.0 ELSE (${dot40}) * 1.0 / (SQRT(${normSq40}) * SQRT(${q40Count})) END`;
     }
   }
 
   const distExpr = `6371.0 * ACOS(COS(RADIANS(${lat})) * COS(RADIANS(sp.緯度)) * COS(RADIANS(sp.経度) - RADIANS(${lng})) + SIN(RADIANS(${lat})) * SIN(RADIANS(sp.緯度)))`;
 
+  // 論文のシステム構成図（ステップ1〜4）に完全対応したSQL
   const sql = `
+    WITH
+    -- ステップ1：観光地絞り込み（大円距離フィルタ）
+    step1_spots AS (
+      SELECT
+        sp.観光地名,
+        ${distExpr} AS dist
+      FROM spots sp
+      WHERE ${distExpr} <= ${radius}
+    ),
+    -- ステップ2：各空間マトリクスのフィルタリング（M'_m, M'_s, M'_a）
+    step2_move AS (
+      SELECT m.*
+      FROM move_matrix m
+      INNER JOIN step1_spots f ON m.観光地名 = f.観光地名
+    ),
+    step2_stay AS (
+      SELECT s.*
+      FROM stay_matrix s
+      INNER JOIN step1_spots f ON s.観光地名 = f.観光地名
+    ),
+    step2_act AS (
+      SELECT a.*
+      FROM space_matrix a
+      INNER JOIN step1_spots f ON a.観光地名 = f.観光地名
+    ),
+    -- ステップ3：各マトリクスを結合して総合空間マトリクス（M'_T）を生成
+    step3_combined AS (
+      SELECT
+        f.観光地名,
+        ${combinedSelectCols}
+      FROM step1_spots f
+      INNER JOIN step2_move m ON f.観光地名 = m.観光地名
+      INNER JOIN step2_stay s ON f.観光地名 = s.観光地名
+      INNER JOIN step2_act  a ON f.観光地名 = a.観光地名
+    )
+    -- ステップ4：各空間および総合空間の相関量計算（正規化内積）
     SELECT
-      sp.観光地名 AS name,
-      ${distExpr} AS dist,
+      f.観光地名 AS name,
+      f.dist AS dist,
       ${xMSExpr} AS x_ms,
       ${xSSExpr} AS x_ss,
       ${xASExpr} AS x_as,
       ${xAllExpr} AS x_all
-    FROM spots sp
-    JOIN move_matrix m ON sp.観光地名 = m.観光地名
-    JOIN stay_matrix s ON sp.観光地名 = s.観光地名
-    JOIN space_matrix a ON sp.観光地名 = a.観光地名
-    WHERE ${distExpr} <= ${radius}
-    ORDER BY dist ASC, sp.観光地名 ASC;
+    FROM step1_spots f
+    INNER JOIN step2_move m ON f.観光地名 = m.観光地名
+    INNER JOIN step2_stay s ON f.観光地名 = s.観光地名
+    INNER JOIN step2_act  a ON f.観光地名 = a.観光地名
+    INNER JOIN step3_combined c ON f.観光地名 = c.観光地名
+    ORDER BY f.dist ASC, f.観光地名 ASC;
   `;
 
   try {
@@ -388,6 +484,7 @@ function runCalculation() {
     } else {
       lastRows = res[0].values.map(([name, dist, x_ms, x_ss, x_as, x_all]) => {
         const row = { name, dist, x_ms, x_ss, x_as, x_all, scores: {} };
+        // ステップ5：重み付け表によるタイプ別計算
         EVAL_TYPES.forEach((t) => {
           row.scores[t.key] = t.wMS * x_ms + t.wSS * x_ss + t.wAS * x_as;
         });
@@ -421,51 +518,7 @@ function renderTables() {
     `計算式：T = ${evalObj.wMS} × x_MS (移動) + ${evalObj.wSS} × x_SS (滞在) + ${evalObj.wAS} × x_AS (活動)`;
   document.getElementById("hit-count").textContent = `（該当：${lastRows.length}件）`;
 
-  // ② 個別Top-5
-  const top5Body = document.querySelector("#top5-table tbody");
-  const sortedEval = sortByMetric(lastRows, (r) => r.scores[evalKey]).slice(0, 5);
-  if (sortedEval.length === 0) {
-    top5Body.innerHTML = '<tr><td colspan="8" class="empty-cell">指定範囲内にスポットがありません（検索半径を広げるか、現在地を変更してください）</td></tr>';
-  } else {
-    top5Body.innerHTML = sortedEval.map((r, i) => `
-      <tr>
-        <td class="num bold">${i + 1}</td>
-        <td>${escapeHtml(r.name)}</td>
-        <td class="num bold">${r.scores[evalKey].toFixed(4)}</td>
-        <td class="num">${r.dist.toFixed(3)}</td>
-        <td class="num">${r.x_ms.toFixed(4)}</td>
-        <td class="num">${r.x_ss.toFixed(4)}</td>
-        <td class="num">${r.x_as.toFixed(4)}</td>
-        <td class="num">${r.x_all.toFixed(4)}</td>
-      </tr>
-    `).join("");
-  }
-
-  // ②-2 全7タイプ + 総合空間 一括比較（上位5位）
-  const compareBody = document.querySelector("#compare-table tbody");
-  if (lastRows.length === 0) {
-    compareBody.innerHTML = '<tr><td colspan="9" class="empty-cell">該当データなし</td></tr>';
-  } else {
-    const colLists = [
-      sortByMetric(lastRows, (r) => r.x_all).map((r) => ({ name: r.name, val: r.x_all, dist: r.dist })),
-      ...EVAL_TYPES.map((t) =>
-        sortByMetric(lastRows, (r) => r.scores[t.key]).map((r) => ({ name: r.name, val: r.scores[t.key], dist: r.dist }))
-      )
-    ];
-    const maxRank = Math.min(5, lastRows.length);
-    let html = "";
-    for (let rank = 0; rank < maxRank; rank++) {
-      html += `<tr><td class="num bold">${rank + 1}</td>`;
-      for (const list of colLists) {
-        const item = list[rank];
-        html += `<td><div class="spot-name">${escapeHtml(item.name)}</div><div class="spot-meta">${item.val.toFixed(4)} (${item.dist.toFixed(2)}km)</div></td>`;
-      }
-      html += "</tr>";
-    }
-    compareBody.innerHTML = html;
-  }
-
-  // ③ 空間別相関量ランキング（絞り込み全件）
+  // ② 空間別相関量ランキング（絞り込み全件）
   const allBody = document.querySelector("#all-ranking-table tbody");
   if (lastRows.length === 0) {
     allBody.innerHTML = '<tr><td colspan="9" class="empty-cell">該当データなし</td></tr>';
@@ -488,6 +541,50 @@ function renderTables() {
         <td class="num">${byAS[i].x_as.toFixed(4)}</td>
       </tr>
     `).join("");
+  }
+
+  // ③ 評価関数 GE による推薦結果（上位5位）
+  const top5Body = document.querySelector("#top5-table tbody");
+  const sortedEval = sortByMetric(lastRows, (r) => r.scores[evalKey]).slice(0, 5);
+  if (sortedEval.length === 0) {
+    top5Body.innerHTML = '<tr><td colspan="8" class="empty-cell">指定範囲内にスポットがありません（検索半径を広げるか、現在地を変更してください）</td></tr>';
+  } else {
+    top5Body.innerHTML = sortedEval.map((r, i) => `
+      <tr>
+        <td class="num bold">${i + 1}</td>
+        <td>${escapeHtml(r.name)}</td>
+        <td class="num bold">${r.scores[evalKey].toFixed(4)}</td>
+        <td class="num">${r.dist.toFixed(3)}</td>
+        <td class="num">${r.x_ms.toFixed(4)}</td>
+        <td class="num">${r.x_ss.toFixed(4)}</td>
+        <td class="num">${r.x_as.toFixed(4)}</td>
+        <td class="num">${r.x_all.toFixed(4)}</td>
+      </tr>
+    `).join("");
+  }
+
+  // ③-2 全7タイプ + 総合空間 一括比較（上位5位）
+  const compareBody = document.querySelector("#compare-table tbody");
+  if (lastRows.length === 0) {
+    compareBody.innerHTML = '<tr><td colspan="9" class="empty-cell">該当データなし</td></tr>';
+  } else {
+    const colLists = [
+      sortByMetric(lastRows, (r) => r.x_all).map((r) => ({ name: r.name, val: r.x_all, dist: r.dist })),
+      ...EVAL_TYPES.map((t) =>
+        sortByMetric(lastRows, (r) => r.scores[t.key]).map((r) => ({ name: r.name, val: r.scores[t.key], dist: r.dist }))
+      )
+    ];
+    const maxRank = Math.min(5, lastRows.length);
+    let html = "";
+    for (let rank = 0; rank < maxRank; rank++) {
+      html += `<tr><td class="num bold">${rank + 1}</td>`;
+      for (const list of colLists) {
+        const item = list[rank];
+        html += `<td><div class="spot-name">${escapeHtml(item.name)}</div><div class="spot-meta">${item.val.toFixed(4)} (${item.dist.toFixed(2)}km)</div></td>`;
+      }
+      html += "</tr>";
+    }
+    compareBody.innerHTML = html;
   }
 }
 
